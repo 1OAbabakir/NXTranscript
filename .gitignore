@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv*/
+venv/
+
+# PyInstaller and packaged applications
+build/
+build-*/
+dist/
+dist-*/
+*.pkg
+
+# Secrets and local configuration
+.env
+.env.*
+*.env
+env
+OPENAI_API_KEY.env
+
+# Editors and operating systems
+.ropeproject/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

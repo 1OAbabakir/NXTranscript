@@ -1,0 +1,5 @@
+openai
+Pillow
+ttkbootstrap
+PyInstaller
+imageio-ffmpeg
