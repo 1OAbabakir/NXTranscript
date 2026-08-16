@@ -143,6 +143,81 @@ class SprecherTests(unittest.TestCase):
             "eins zwei drei vier fünf sechs",
         )
 
+    def test_lange_rede_erhaelt_einen_zeitanker_pro_sekunde(self):
+        bloecke = main._sprachbloecke_bilden(
+            [
+                {
+                    "start": 1.0,
+                    "end": 35.0,
+                    "speaker": "speaker_1",
+                    "text": "eins zwei drei vier fünf sechs sieben acht neun zehn",
+                }
+            ],
+            stille_enden=[9.2, 17.8, 26.4],
+        )
+        anker = [anker for block in bloecke for anker in block.zeitanker]
+        self.assertEqual(len(anker), 34)
+        self.assertAlmostEqual(anker[0].ende, 2.0)
+        self.assertTrue(
+            all(
+                eintrag.ende - eintrag.start <= main.ZEITANKER_MAX_SEKUNDEN
+                for eintrag in anker
+            )
+        )
+
+    def test_verfeinerter_text_wird_ohne_inhaltsverlust_zeitlich_verteilt(self):
+        anker = tuple(
+            main.Zeitanker(float(sekunde), float(sekunde + 1), "alt eins zwei")
+            for sekunde in range(1, 35)
+        )
+        block = main.Sprachblock(
+            1.0,
+            35.0,
+            "speaker_1",
+            " ".join(eintrag.fallback_text for eintrag in anker),
+            anker,
+        )
+        guter_text = (
+            "Nein, das glaube ich nicht. چرا این را می‌گوید؟ "
+            "Das wird er mir nicht sagen. او دقیقاً می‌داند."
+        )
+        segmente = main._text_auf_zeitanker_verteilen(block, guter_text, ["de", "fa"])
+
+        self.assertLessEqual(len(segmente), 34)
+        self.assertGreater(len(segmente), 1)
+        self.assertEqual(
+            " ".join(segment["text"] for segment in segmente), guter_text
+        )
+        self.assertEqual(segmente[0]["start"], 1.0)
+        self.assertLessEqual(segmente[-1]["end"], 35.0)
+        self.assertTrue(
+            all(
+                segment["end"] - segment["start"]
+                <= main.ZEITANKER_MAX_SEKUNDEN
+                for segment in segmente
+            )
+        )
+
+    def test_formatierung_schreibt_genau_eine_zeile_pro_sekunde(self):
+        text = main._transkript_formatieren(
+            "mix.ogg",
+            [
+                {"start": 1.0, "end": 2.0, "speaker": "speaker_1", "text": "Hallo"},
+                {"start": 2.0, "end": 3.0, "speaker": "speaker_1", "text": "سلام"},
+            ],
+            4.0,
+        )
+        zeitzeilen = [zeile for zeile in text.splitlines() if zeile.startswith("[")]
+        self.assertEqual(
+            zeitzeilen,
+            [
+                "[00:00:00] —",
+                "[00:00:01] Sprecher 1: Hallo",
+                "[00:00:02] Sprecher 1: سلام",
+                "[00:00:03] —",
+            ],
+        )
+
 
 class OpenAIParameterTests(unittest.TestCase):
     def test_diarisierung_sendet_keine_feste_sprache_und_nutzt_referenzen(self):
@@ -173,18 +248,48 @@ class OpenAIParameterTests(unittest.TestCase):
         antwort = SimpleNamespace(
             text="Hallo سلام",
             languages=[SimpleNamespace(code="de"), SimpleNamespace(code="fa")],
+            words=[
+                SimpleNamespace(start=0.1, end=0.5, word="Hallo"),
+                SimpleNamespace(start=0.6, end=1.0, word="سلام"),
+            ],
         )
         client = FakeClient(antwort)
         with tempfile.TemporaryDirectory() as temp_name:
             audio = Path(temp_name) / "audio.mp3"
             audio.write_bytes(b"audio")
-            text, sprachen = main._sprachblock_transkribieren(client, audio)
+            text, sprachen, wortzeiten = main._sprachblock_transkribieren(client, audio)
 
         parameter = client.audio.transcriptions.aufrufe[0]
         self.assertEqual(parameter["model"], "gpt-transcribe")
         self.assertEqual(parameter["languages"], ["de", "fa"])
+        self.assertEqual(parameter["response_format"], "verbose_json")
+        self.assertEqual(parameter["timestamp_granularities"], ["word"])
         self.assertEqual(text, "Hallo سلام")
         self.assertEqual(sprachen, ["de", "fa"])
+        self.assertEqual(wortzeiten[1]["word"], "سلام")
+
+    def test_openai_wortzeiten_bestimmen_die_ausgabesekunde(self):
+        anker = tuple(
+            main.Zeitanker(float(sekunde), float(sekunde + 1), "fallback")
+            for sekunde in range(10, 14)
+        )
+        block = main.Sprachblock(10.0, 14.0, "speaker_1", "fallback", anker)
+        segmente = main._text_mit_wortzeiten_auf_sekunden_verteilen(
+            block,
+            "Hallo Welt سلام دوست",
+            ["de", "fa"],
+            [
+                {"start": 0.1, "end": 0.4, "word": "Hallo"},
+                {"start": 1.2, "end": 1.6, "word": "Welt"},
+                {"start": 2.1, "end": 2.5, "word": "سلام"},
+                {"start": 3.1, "end": 3.5, "word": "دوست"},
+            ],
+        )
+        self.assertEqual([segment["start"] for segment in segmente], [10, 11, 12, 13])
+        self.assertEqual(
+            " ".join(segment["text"] for segment in segmente),
+            "Hallo Welt سلام دوست",
+        )
 
     def test_formatierung_bewahrt_persische_schrift(self):
         text = main._transkript_formatieren(

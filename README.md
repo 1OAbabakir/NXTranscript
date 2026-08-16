@@ -6,7 +6,7 @@ Transkript ist eine Desktop-Anwendung zur Transkription von Audiodateien mit aut
 
 - zweisprachige Transkription für Deutsch und Persisch innerhalb derselben Audiodatei
 - automatische Unterscheidung mehrerer Sprecher
-- Start- und Endzeit für jeden erkannten Gesprächsabschnitt
+- sekundengenaue Start- und Endzeit für kurze Gesprächsabschnitte
 - automatische Vorbereitung und Aufteilung großer Audiodateien
 - Speichern des fertigen Transkripts als UTF-8-Textdatei
 - helle und dunkle Oberfläche
@@ -82,6 +82,8 @@ Die Verarbeitung besteht aus zwei Stufen:
 
 1. `gpt-4o-transcribe-diarize` ermittelt Sprecherwechsel und Zeitstempel, ohne eine einzelne Eingabesprache zu erzwingen.
 2. Direkt benachbarte Abschnitte desselben Sprechers werden gebündelt und mit `gpt-transcribe` sowie den Sprachhinweisen `de` und `fa` erneut transkribiert.
+
+Der zweite Durchlauf fordert zusätzlich Wort-Zeitstempel an. Für die Ausgabe wird der hochwertige zweisprachige Text anhand dieser OpenAI-Zeitwerte wortweise auf einzelne Sekunden zurückverteilt. Jede Sekunde der Audiodatei erhält genau eine Ausgabezeile; Sekunden ohne erkannte Sprache werden mit `—` markiert. Falls die API ausnahmsweise keine Wortzeiten liefert, dienen die Zeitsegmente der Sprechererkennung als lokaler Fallback. Dadurch bleibt die Qualität des zweiten Durchlaufs erhalten, ohne dass ein langes Gespräch als eine einzige Zeitzeile erscheint oder ein zusätzlicher API-Request nötig wird.
 
 Der zweisprachige Pass bewahrt Deutsch in lateinischer und Persisch in persischer Schrift. Er übersetzt die Inhalte nicht. Falls ein einzelner Verfeinerungsrequest fehlschlägt, bleibt für diesen Abschnitt die Basistranskription erhalten und das Ergebnis enthält einen Hinweis.
 
