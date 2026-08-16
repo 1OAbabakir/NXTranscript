@@ -1,10 +1,12 @@
-from PIL import Image, ImageTk
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from tkinter import filedialog, messagebox
 import threading
-from pathlib import Path
+import tkinter.font as tkfont
 from datetime import datetime
+from pathlib import Path
+from tkinter import TclError, filedialog, messagebox
+
+import ttkbootstrap as ttk
+from PIL import Image, ImageTk
+
 from main import transkribiere_audio
 
 
@@ -12,32 +14,41 @@ class TranskriptionsGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Transkript")
+        self.root.geometry("900x760")
+        self.root.minsize(680, 560)
         self.api_key = ""
         self.log_eintraege = []
         self.output_fenster = None
         self.output_text = None
         self.current_theme = "flatly"
         self.style = ttk.Style(self.current_theme)
-        
-        
+
+        self.standard_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.standard_font.configure(size=11)
+        self.titel_font = self.standard_font.copy()
+        self.titel_font.configure(size=13, weight="bold")
+        self.klein_font = self.standard_font.copy()
+        self.klein_font.configure(size=9, slant="italic")
+
         self.taskbar = ttk.Frame(root, padding=(10, 5), bootstyle="secondary")
         self.taskbar.pack(side="top", fill="x")
 
-        # App-Name oder Icon links
         self.title_label = ttk.Label(
-            self.taskbar, text="📝", font=("Segoe UI", 13, "bold")
+            self.taskbar, text="Transkript", font=self.titel_font
         )
         self.title_label.pack(side="left")
 
-        # Dark/Light-Mode-Button RECHTS in die Taskbar!
         self.mode_button = ttk.Button(
-            self.taskbar, text="🌙 Dunkelmodus", command=self.toggle_theme, bootstyle="dark-link"
+            self.taskbar,
+            text="Dunkelmodus",
+            command=self.toggle_theme,
+            bootstyle="dark-link",
         )
         self.mode_button.pack(side="right")
 
         self.options_button = ttk.Button(
             self.taskbar,
-            text="⚙ Optionen",
+            text="Optionen",
             command=self.optionen_oeffnen,
             bootstyle="secondary-link",
         )
@@ -45,47 +56,85 @@ class TranskriptionsGUI:
 
         self.output_button = ttk.Button(
             self.taskbar,
-            text="📋 Output",
+            text="Protokoll",
             command=self.output_oeffnen,
             bootstyle="secondary-link",
         )
         self.output_button.pack(side="right", padx=(0, 8))
 
         try:
-            logo_pfad = Path(__file__).resolve().with_name("transkript-logo.png")
-            bild = Image.open(logo_pfad)
-            bild = bild.resize((240, 240))
-            self.logo = ImageTk.PhotoImage(bild)
+            logo_pfad = (
+                Path(__file__).resolve().with_name("transkript-logo-transparent.png")
+            )
+            bild = Image.open(logo_pfad).convert("RGBA")
+            bild.thumbnail((360, 200), Image.Resampling.LANCZOS)
+            self.logo_helles_theme = ImageTk.PhotoImage(bild)
+            logo_hell = Image.new("RGBA", bild.size, (238, 242, 247, 0))
+            logo_hell.putalpha(bild.getchannel("A"))
+            self.logo_dunkles_theme = ImageTk.PhotoImage(logo_hell)
+            self.logo = self.logo_helles_theme
             self.logo_label = ttk.Label(root, image=self.logo)
             self.logo_label.pack(pady=(5, 0))
         except FileNotFoundError:
-            print("⚠️ transkript-logo.png nicht gefunden – Logo wird übersprungen.")
-
+            self.logo_label = None
+            print(
+                "⚠️ transkript-logo-transparent.png nicht gefunden – Logo wird übersprungen."
+            )
 
         self.frame = ttk.Frame(root, padding=20)
-        self.frame.pack()
+        self.frame.pack(fill="x")
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.columnconfigure(1, weight=1)
+        self.frame.columnconfigure(2, weight=1)
 
         self.dateipfad = ttk.StringVar()
         self.entry = ttk.Entry(
             self.frame,
             textvariable=self.dateipfad,
-            width=80,
+            font=self.standard_font,
         )
-        self.entry.grid(row=0, column=0, columnspan=3, padx=5, pady=(0, 10), sticky="we")
+        self.entry.grid(
+            row=0, column=0, columnspan=3, padx=5, pady=(0, 10), sticky="we"
+        )
 
-        self.select_button = ttk.Button(self.frame, text="🎵 Datei auswählen", command=self.datei_auswaehlen, bootstyle="info")
+        self.select_button = ttk.Button(
+            self.frame,
+            text="Datei auswählen",
+            command=self.datei_auswaehlen,
+            bootstyle="info",
+        )
         self.select_button.grid(row=1, column=1, padx=10)
 
-        self.start_button = ttk.Button(self.frame, text="📝 Transkribieren", command=self.transkribieren, bootstyle="success")
+        self.start_button = ttk.Button(
+            self.frame,
+            text="Transkribieren",
+            command=self.transkribieren,
+            bootstyle="success",
+        )
         self.start_button.grid(row=1, column=0, pady=10)
 
-        self.save_button = ttk.Button(self.frame, text="💾 Speichern", command=self.speichern, bootstyle="secondary")
+        self.save_button = ttk.Button(
+            self.frame, text="Speichern", command=self.speichern, bootstyle="secondary"
+        )
         self.save_button.grid(row=1, column=2, pady=10)
 
-        self.text_output = ttk.Text(root, height=20, width=80, font=("Segoe UI", 10))
-        self.text_output.pack(padx=20, pady=10)
+        self.text_frame = ttk.Frame(root, padding=(20, 0))
+        self.text_frame.pack(fill="both", expand=True)
+        self.text_scrollbar = ttk.Scrollbar(self.text_frame, orient="vertical")
+        self.text_scrollbar.pack(side="right", fill="y")
+        self.text_output = ttk.Text(
+            self.text_frame,
+            height=20,
+            wrap="word",
+            font=self.standard_font,
+            yscrollcommand=self.text_scrollbar.set,
+        )
+        self.text_output.pack(side="left", fill="both", expand=True)
+        self.text_scrollbar.config(command=self.text_output.yview)
 
-        self.progress = ttk.Progressbar(root, mode='indeterminate', length=300, bootstyle="info")
+        self.progress = ttk.Progressbar(
+            root, mode="indeterminate", length=300, bootstyle="info"
+        )
         self.progress.pack(pady=(0, 10))
         self.progress.stop()
 
@@ -99,18 +148,15 @@ class TranskriptionsGUI:
         self.status_label.pack(pady=(0, 10))
 
         self.transkript_text = ""
-        
+
         self.footer = ttk.Label(
-            root,
-            text="von omed",
-            font=("Segoe UI", 9, "italic"),
-            anchor="center"
+            root, text="von omed", font=self.klein_font, anchor="center"
         )
         self.footer.pack(side="bottom", pady=(0, 8))
         self.log("Anwendung gestartet")
 
     def log(self, nachricht):
-        zeit = datetime.now().strftime("%H:%M:%S")
+        zeit = datetime.now().astimezone().strftime("%H:%M:%S")
         eintrag = f"[{zeit}] {nachricht}"
         self.log_eintraege.append(eintrag)
 
@@ -120,7 +166,7 @@ class TranskriptionsGUI:
                 self.output_text.insert("end", eintrag + "\n")
                 self.output_text.see("end")
                 self.output_text.config(state="disabled")
-        except Exception:
+        except TclError:
             self.output_text = None
 
     def output_oeffnen(self):
@@ -131,7 +177,7 @@ class TranskriptionsGUI:
             return
 
         fenster = ttk.Toplevel(self.root)
-        fenster.title("Output")
+        fenster.title("Protokoll")
         fenster.geometry("760x360")
         fenster.minsize(520, 240)
         fenster.transient(self.root)
@@ -149,7 +195,7 @@ class TranskriptionsGUI:
         self.output_text = ttk.Text(
             ausgabe_frame,
             wrap="word",
-            font=("Consolas", 10),
+            font="TkFixedFont",
             yscrollcommand=scrollbar.set,
         )
         self.output_text.pack(side="left", fill="both", expand=True)
@@ -185,7 +231,6 @@ class TranskriptionsGUI:
 
         fenster.protocol("WM_DELETE_WINDOW", beim_schliessen)
 
-
     def datei_auswaehlen(self):
         pfad = filedialog.askopenfilename(
             parent=self.root,
@@ -193,13 +238,15 @@ class TranskriptionsGUI:
             filetypes=[
                 (
                     "Alle unterstützten Audiodateien",
-                    ("*.mp3", "*.wav", "*.m4a", "*.ogg", "*.flac"),
+                    ("*.mp3", "*.wav", "*.m4a", "*.ogg", "*.flac", "*.mp4", "*.webm"),
                 ),
                 ("MP3-Dateien", "*.mp3"),
                 ("Wave-Dateien", "*.wav"),
                 ("M4A-Dateien", "*.m4a"),
                 ("Ogg-Dateien", "*.ogg"),
                 ("FLAC-Dateien", "*.flac"),
+                ("MP4-Dateien", "*.mp4"),
+                ("WebM-Dateien", "*.webm"),
                 ("Alle Dateien", "*.*"),
             ],
         )
@@ -229,7 +276,7 @@ class TranskriptionsGUI:
                 return
 
         self.progress.start()
-        self.status_text.set("Sprecher und Zeitstempel werden erkannt …")
+        self.status_text.set("Deutsch/Persisch und Sprecher werden erkannt …")
         self.log(f"Transkription mit Sprechererkennung gestartet: {Path(pfad).name}")
         self.start_button.config(state="disabled")
 
@@ -242,6 +289,7 @@ class TranskriptionsGUI:
 
     def transkription_im_hintergrund(self, pfad, api_key):
         try:
+
             def fortschritt(meldung):
                 self.root.after(
                     0,
@@ -253,12 +301,20 @@ class TranskriptionsGUI:
 
             self.root.after(0, lambda: self.text_output.delete("1.0", "end"))
             self.root.after(0, lambda: self.text_output.insert("end", text))
-            self.root.after(0, lambda: self.status_text.set("Transkription abgeschlossen"))
-            self.root.after(0, lambda: self.log("Transkription erfolgreich abgeschlossen"))
-            self.root.after(0, lambda: messagebox.showinfo("Fertig", "Transkription abgeschlossen."))
-        except Exception as e:
+            self.root.after(
+                0, lambda: self.status_text.set("Transkription abgeschlossen")
+            )
+            self.root.after(
+                0, lambda: self.log("Transkription erfolgreich abgeschlossen")
+            )
+            self.root.after(
+                0, lambda: messagebox.showinfo("Fertig", "Transkription abgeschlossen.")
+            )
+        except Exception as e:  # noqa: BLE001 - alle Hintergrundfehler müssen in der GUI erscheinen.
             fehlermeldung = str(e)
-            self.root.after(0, lambda: self.status_text.set("Transkription fehlgeschlagen"))
+            self.root.after(
+                0, lambda: self.status_text.set("Transkription fehlgeschlagen")
+            )
             self.root.after(
                 0,
                 lambda meldung=fehlermeldung: self.log(f"FEHLER: {meldung}"),
@@ -290,7 +346,7 @@ class TranskriptionsGUI:
         ttk.Label(
             inhalt,
             text="OpenAI API-Key",
-            font=("Segoe UI", 11, "bold"),
+            font=self.titel_font,
         ).pack(anchor="w")
         ttk.Label(
             inhalt,
@@ -356,7 +412,7 @@ class TranskriptionsGUI:
         pfad = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Textdateien", "*.txt")],
-            title="Speichern unter"
+            title="Speichern unter",
         )
         if pfad:
             with open(pfad, "w", encoding="utf-8") as f:
@@ -365,16 +421,19 @@ class TranskriptionsGUI:
 
     def toggle_theme(self):
         if self.current_theme == "flatly":
-            # Wechsel zu dunklem Theme
             self.current_theme = "superhero"
             self.style.theme_use("superhero")
-            self.mode_button.config(text="☀️ Hellmodus", bootstyle="light-link")
+            self.mode_button.config(text="Hellmodus", bootstyle="light-link")
+            if self.logo_label:
+                self.logo = self.logo_dunkles_theme
+                self.logo_label.config(image=self.logo)
         else:
-            # Wechsel zu hellem Theme
             self.current_theme = "flatly"
             self.style.theme_use("flatly")
-            self.mode_button.config(text="🌙 Dunkelmodus", bootstyle="dark-link")
-
+            self.mode_button.config(text="Dunkelmodus", bootstyle="dark-link")
+            if self.logo_label:
+                self.logo = self.logo_helles_theme
+                self.logo_label.config(image=self.logo)
 
 
 if __name__ == "__main__":

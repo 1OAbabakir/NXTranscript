@@ -12,7 +12,7 @@ a = Analysis(
     pathex=[],
     binaries=ffmpeg_binaries,
     datas=[
-        ('transkript-logo.png', '.'),
+        ('transkript-logo-transparent.png', '.'),
     ] + ttkbootstrap_datas + ffmpeg_datas,
     hiddenimports=ffmpeg_hiddenimports,
     hookspath=[],
@@ -43,5 +43,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['transkript-logo.ico'],
+    icon=['transkript-logo-transparent.ico'],
 )

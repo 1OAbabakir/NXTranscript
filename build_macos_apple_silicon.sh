@@ -16,14 +16,15 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv-macos"
 ICONSET_DIR="$PROJECT_DIR/build/macos/Transkript.iconset"
 ICNS_PATH="$PROJECT_DIR/build/macos/transkript-logo.icns"
-SOURCE_ICON="$PROJECT_DIR/transkript-logo.png"
+SOURCE_ICON="$PROJECT_DIR/transkript-logo-transparent.png"
+SQUARE_ICON="$PROJECT_DIR/build/macos/transkript-logo-square.png"
 DMG_DIR="$PROJECT_DIR/build/macos/dmg"
 DMG_PATH="$PROJECT_DIR/dist/Transkript-macOS-Apple-Silicon.dmg"
 
 cd "$PROJECT_DIR"
 
 if [[ ! -f "$SOURCE_ICON" ]]; then
-    echo "Fehler: transkript-logo.png wurde nicht gefunden."
+    echo "Fehler: transkript-logo-transparent.png wurde nicht gefunden."
     exit 1
 fi
 
@@ -39,10 +40,27 @@ fi
 
 mkdir -p "$ICONSET_DIR"
 
+"$VENV_DIR/bin/python" - "$SOURCE_ICON" "$SQUARE_ICON" <<'PY'
+from pathlib import Path
+import sys
+
+from PIL import Image
+
+
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+logo = Image.open(source).convert("RGBA")
+logo.thumbnail((920, 560), Image.Resampling.LANCZOS)
+canvas = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+position = ((canvas.width - logo.width) // 2, (canvas.height - logo.height) // 2)
+canvas.alpha_composite(logo, position)
+canvas.save(target)
+PY
+
 make_icon() {
     local size="$1"
     local filename="$2"
-    sips -z "$size" "$size" "$SOURCE_ICON" --out "$ICONSET_DIR/$filename" >/dev/null
+    sips -z "$size" "$size" "$SQUARE_ICON" --out "$ICONSET_DIR/$filename" >/dev/null
 }
 
 make_icon 16 icon_16x16.png
@@ -69,7 +87,7 @@ iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
     --icon "$ICNS_PATH" \
     --collect-data ttkbootstrap \
     --collect-all imageio_ffmpeg \
-    --add-data "transkript-logo.png:." \
+    --add-data "transkript-logo-transparent.png:." \
     gui.py
 
 ditto -c -k --sequesterRsrc --keepParent \

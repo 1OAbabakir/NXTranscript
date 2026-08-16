@@ -4,13 +4,13 @@ Transkript ist eine Desktop-Anwendung zur Transkription von Audiodateien mit aut
 
 ## Funktionen
 
-- Transkription deutschsprachiger Audiodateien
+- zweisprachige Transkription für Deutsch und Persisch innerhalb derselben Audiodatei
 - automatische Unterscheidung mehrerer Sprecher
 - Start- und Endzeit für jeden erkannten Gesprächsabschnitt
 - automatische Vorbereitung und Aufteilung großer Audiodateien
 - Speichern des fertigen Transkripts als UTF-8-Textdatei
 - helle und dunkle Oberfläche
-- separates Output-Fenster für Status- und Fehlermeldungen
+- separates Protokollfenster für Status- und Fehlermeldungen
 - API-Key-Eingabe direkt in der grafischen Oberfläche
 - eigenständige Windows-Anwendung mit eingebettetem FFmpeg
 - Build-Skript für Apple-Silicon-Macs
@@ -20,12 +20,13 @@ Transkript ist eine Desktop-Anwendung zur Transkription von Audiodateien mit aut
 ```text
 Datei: gespraech.mp3
 Dauer: 00:04:32
+Sprachen: Deutsch und Persisch
 
-[00:00:00 – 00:00:07] Sprecher A: Guten Morgen und herzlich willkommen.
-[00:00:08 – 00:00:15] Sprecher B: Vielen Dank für die Einladung.
+[00:00:00 – 00:00:07] Sprecher 1: Guten Morgen und herzlich willkommen.
+[00:00:08 – 00:00:15] Sprecher 2: سلام، خیلی ممنون از دعوت شما.
 ```
 
-Die Sprecher werden mit technischen Labels wie `A`, `B` oder `C` unterschieden. Die Anwendung erkennt nicht die wirklichen Namen oder Identitäten der Personen. Namen können anschließend im Text manuell ersetzt werden.
+Die Sprecher werden mit technischen Nummern unterschieden. Bis zu vier erkannte Stimmen werden über längere Dateien hinweg mit kurzen lokalen Referenzausschnitten stabilisiert. Die Anwendung ermittelt daraus keine wirklichen Namen oder Identitäten.
 
 ## Voraussetzungen
 
@@ -48,7 +49,7 @@ Für die Ausführung aus dem Quellcode oder den Bau einer neuen Version wird Pyt
 
 Der API-Key bleibt nur bis zum Schließen der Anwendung im Arbeitsspeicher. Er wird weder im Programm noch in einer `.env`- oder Konfigurationsdatei gespeichert.
 
-Mit **Output** lässt sich ein separates Protokollfenster öffnen. Dort können Status- und Fehlermeldungen angesehen, kopiert oder geleert werden.
+Mit **Protokoll** lässt sich ein separates Fenster öffnen. Dort können Status- und Fehlermeldungen angesehen, kopiert oder geleert werden.
 
 ## Unterstützte Audiodateien
 
@@ -59,14 +60,30 @@ Der Dateidialog bietet direkt folgende Formate an:
 - M4A (`.m4a`)
 - OGG (`.ogg`)
 - FLAC (`.flac`)
+- MP4 (`.mp4`)
+- WebM (`.webm`)
 
 Über **Alle Dateien** lassen sich auch weitere Audioformate auswählen. Ob diese verarbeitet werden können, hängt davon ab, ob das eingebettete FFmpeg und die OpenAI Audio API das jeweilige Format unterstützen. Die oben aufgeführten Formate sind daher die empfohlene Auswahl.
 
-## Große Audiodateien
+## Intelligente Audioaufteilung
 
-Dateien bis einschließlich 24 MiB werden direkt hochgeladen. Größere Dateien werden vor der Übertragung automatisch mit FFmpeg in Mono-MP3 mit 16 kHz und 48 kbit/s umgewandelt und in Abschnitte von jeweils 20 Minuten geteilt.
+Jede Datei wird lokal mit FFmpeg in ein berechenbares Mono-MP3 mit 16 kHz und 48 kbit/s normalisiert. Die Aufteilung berücksichtigt gleichzeitig:
 
-Jeder Abschnitt wird einzeln transkribiert. Die Anwendung addiert danach die Zeitversätze, sodass die Zeitstempel im fertigen Transkript wieder zur gesamten Originaldatei passen. Temporäre Abschnitte werden nach Abschluss automatisch entfernt.
+- höchstens 24.000.000 Byte pro API-Request als Sicherheitsabstand zum 25-MB-Limit,
+- höchstens zehn Minuten pro Diarisierungsabschnitt, damit lange, dicht gesprochene Antworten nicht abgeschnitten werden,
+- erkannte Sprechpausen innerhalb eines 90-Sekunden-Suchfensters,
+- eine Sekunde Überlappung an den Grenzen gegen abgeschnittene Wörter.
+
+Überlappende Segmente werden anhand ihres zeitlichen Mittelpunkts genau einem Abschnitt zugeordnet. Alle Zeitstempel werden anschließend auf die Originalzeit der vollständigen Datei zurückgerechnet. Temporäre Dateien werden nach Abschluss automatisch entfernt.
+
+## Deutsch und Persisch
+
+Die Verarbeitung besteht aus zwei Stufen:
+
+1. `gpt-4o-transcribe-diarize` ermittelt Sprecherwechsel und Zeitstempel, ohne eine einzelne Eingabesprache zu erzwingen.
+2. Direkt benachbarte Abschnitte desselben Sprechers werden gebündelt und mit `gpt-transcribe` sowie den Sprachhinweisen `de` und `fa` erneut transkribiert.
+
+Der zweisprachige Pass bewahrt Deutsch in lateinischer und Persisch in persischer Schrift. Er übersetzt die Inhalte nicht. Falls ein einzelner Verfeinerungsrequest fehlschlägt, bleibt für diesen Abschnitt die Basistranskription erhalten und das Ergebnis enthält einen Hinweis.
 
 ## Aus dem Quellcode starten
 
@@ -113,6 +130,14 @@ Unter macOS oder Linux funktioniert derselbe Aufruf mit den dort üblichen Datei
 python3 main.py --datei "/pfad/aufnahme.mp3" --output "transkription.txt"
 ```
 
+## Tests ausführen
+
+Die Tests senden keine echten OpenAI-Anfragen. Sie prüfen unter anderem das lokale FFmpeg-Chunking und die erzeugten API-Parameter:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Windows-EXE bauen
 
 Der Build verwendet die Datei `Transkript.spec`. Sie bindet das Logo, die benötigten Daten von `ttkbootstrap` und die FFmpeg-Binärdatei von `imageio-ffmpeg` ein.
@@ -131,7 +156,7 @@ Das Ergebnis befindet sich anschließend hier:
 dist/Transkript.exe
 ```
 
-Die EXE wird ohne zusätzliches Konsolenfenster gebaut. Laufzeitmeldungen sind in der Anwendung über **Output** erreichbar.
+Die EXE wird ohne zusätzliches Konsolenfenster gebaut. Laufzeitmeldungen sind in der Anwendung über **Protokoll** erreichbar.
 
 ## Apple-Silicon-App und DMG bauen
 
@@ -166,17 +191,18 @@ Die App ist standardmäßig nicht mit einem Apple-Developer-Zertifikat signiert 
 - Tkinter und ttkbootstrap für die Oberfläche
 - OpenAI Python SDK
 - Modell `gpt-4o-transcribe-diarize`
+- Modell `gpt-transcribe` mit `languages=["de", "fa"]`
 - Antwortformat `diarized_json`
 - imageio-ffmpeg für das mitgelieferte FFmpeg
 - PyInstaller für ausführbare Anwendungen
 
-Die Transkription verwendet Deutsch als vorgegebene Sprache und aktiviert die automatische Chunking-Strategie der API.
+Die Sprechertranskription erkennt die Sprache ohne feste Vorgabe. Der zweite Pass setzt Deutsch und Persisch gemeinsam als erwartete Eingabesprachen. Die Diarisierung verwendet zusätzlich die automatische VAD-Chunking-Strategie der API.
 
 ## Datenschutz und API-Key
 
 - Der API-Key wird nicht in das Repository oder die ausführbare Datei eingebettet.
 - Der in der GUI eingegebene Key wird nur für die aktuelle Programmsitzung gehalten.
-- Die ausgewählte Audiodatei beziehungsweise ihre vorbereiteten Abschnitte werden zur Transkription an die OpenAI API übertragen.
+- Die lokal vorbereiteten Diarisierungsabschnitte und zweisprachigen Sprecherblöcke werden zur Transkription an die OpenAI API übertragen.
 - Lokale temporäre Audioabschnitte werden nach der Verarbeitung gelöscht.
 - API-Nutzung kann Kosten im zugehörigen OpenAI-Projekt verursachen.
 
@@ -186,13 +212,13 @@ Ein API-Key sollte niemals in Quellcode, Screenshots, Commits oder veröffentlic
 
 ### Fehler 413 oder maximale Dateigröße überschritten
 
-Die aktuelle Version teilt Dateien über 24 MiB automatisch auf. Falls der Fehler weiterhin erscheint, prüfen, ob wirklich die neueste EXE gestartet wurde. Im Output-Fenster sollte bei einer großen Datei die automatische Aufteilung angezeigt werden.
+Die aktuelle Version kontrolliert jeden erzeugten Abschnitt gegen ein Limit von 24.000.000 Byte. Falls der Fehler weiterhin erscheint, prüfen, ob wirklich die neueste EXE gestartet wurde. Im Protokollfenster wird die Anzahl der erzeugten Abschnitte angezeigt.
 
 ### Keine API-Nutzung und keine Transkription
 
 - Unter **Optionen** prüfen, ob ein API-Key für die aktuelle Sitzung eingetragen wurde.
 - Internetverbindung kontrollieren.
-- Das Fenster **Output** öffnen und die konkrete Fehlermeldung prüfen.
+- Das Fenster **Protokoll** öffnen und die konkrete Fehlermeldung prüfen.
 - Im OpenAI-Konto kontrollieren, ob das API-Projekt aktiv ist und über Guthaben beziehungsweise Abrechnung verfügt.
 
 ### Datei lässt sich nicht auswählen
@@ -217,8 +243,11 @@ Transkript/
 ├── Transkript.spec                 # Windows-PyInstaller-Konfiguration
 ├── build_macos_apple_silicon.sh    # Apple-Silicon-Buildskript
 ├── MACOS_APPLE_SILICON.md          # zusätzliche macOS-Buildhinweise
-├── transkript-logo.png             # Logo und macOS-Iconquelle
-└── transkript-logo.ico             # Windows-Programmsymbol
+├── transkript-logo.png             # ursprüngliche Logo-Datei
+├── transkript-logo-transparent.png # transparentes GUI-Logo und macOS-Iconquelle
+├── transkript-logo-transparent.ico # transparentes Windows-Programmsymbol
+├── transkript-logo.ico             # ursprüngliches Windows-Programmsymbol
+└── tests/test_main.py              # Offline-Tests für Audio- und API-Logik
 ```
 
 Virtuelle Umgebungen sowie die Ordner `build` und `dist` sollten nicht in Git eingecheckt werden.
