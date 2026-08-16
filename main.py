@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,11 @@ TEIL_UEBERLAPPUNG_SEKUNDEN = 1.0
 AUDIO_BITRATE = "48k"
 SPRACHBLOCK_MAX_SEKUNDEN = 90
 SPRACHBLOCK_MAX_LUECKE_SEKUNDEN = 1.25
-ZEITANKER_MAX_SEKUNDEN = 1.0
+ZEITANKER_MAX_SEKUNDEN = 10.0
+UNTERTITEL_MAX_SEKUNDEN = 8.0
+UNTERTITEL_MAX_ZEICHEN = 110
+UNTERTITEL_MAX_WOERTER = 20
+UNTERTITEL_PAUSE_SEKUNDEN = 0.65
 MAX_PARALLELE_SPRACHREQUESTS = 3
 ERWARTETE_SPRACHEN = ("de", "fa")
 
@@ -432,11 +437,8 @@ def _zeitanker_fuer_segment(
     if dauer <= ZEITANKER_MAX_SEKUNDEN:
         return [Zeitanker(start, ende, str(segment.get("text", "")))]
 
-    grenzen = [start]
-    naechste_volle_sekunde = math.floor(start) + 1
-    while naechste_volle_sekunde < ende:
-        grenzen.append(float(naechste_volle_sekunde))
-        naechste_volle_sekunde += 1
+    anzahl = math.ceil(dauer / ZEITANKER_MAX_SEKUNDEN)
+    grenzen = [start + index * dauer / anzahl for index in range(anzahl)]
     grenzen.append(ende)
 
     text = str(segment.get("text", "")).strip()
@@ -520,90 +522,35 @@ def _sprachbloecke_bilden(
     return bloecke
 
 
-def _textgrenze_waehlen(
-    tokens: list[str], ideal: int, untergrenze: int, obergrenze: int
-) -> int:
-    if untergrenze >= obergrenze:
-        return untergrenze
-    ideal = min(obergrenze, max(untergrenze, ideal))
-    starke_enden = re.compile(r"[.!?؟]+[\"'»”)]*$")
-    schwache_enden = re.compile(r"[,;:،؛]+[\"'»”)]*$")
-    for muster in (starke_enden, schwache_enden):
-        kandidaten = [
-            grenze
-            for grenze in range(untergrenze, obergrenze + 1)
-            if grenze > 0
-            and abs(grenze - ideal) <= 4
-            and muster.search(tokens[grenze - 1])
-        ]
-        if kandidaten:
-            return min(kandidaten, key=lambda grenze: abs(grenze - ideal))
-    return ideal
-
-
 def _text_auf_zeitanker_verteilen(
     block: Sprachblock, text: str, sprachen: list[str]
 ) -> list[dict[str, Any]]:
     tokens = text.split()
     if not tokens:
         return []
-
-    anker = list(block.zeitanker)
-    fallback_gewichte = [len(eintrag.fallback_text.split()) for eintrag in anker]
-    if not any(fallback_gewichte):
-        gewichte = [max(0.01, eintrag.ende - eintrag.start) for eintrag in anker]
-    else:
-        # Ein kleines Dauergewicht stabilisiert die Zuordnung, falls die erste
-        # Diarisierung in einem kurzen Abschnitt einzelne Wörter ausgelassen hat.
-        gewichte = [
-            max(0.5, wortzahl) + max(0.0, eintrag.ende - eintrag.start) * 0.05
-            for eintrag, wortzahl in zip(anker, fallback_gewichte)
-        ]
-
-    grenzen = [0]
-    kumuliert = 0.0
-    gesamtgewicht = sum(gewichte)
-    for index, gewicht in enumerate(gewichte[:-1], start=1):
-        kumuliert += gewicht
-        ideal = round(kumuliert / gesamtgewicht * len(tokens))
-        verbleibende_anker = len(anker) - index
-        wenn_moeglich_ein_token = len(tokens) >= len(anker)
-        untergrenze = grenzen[-1] + (1 if wenn_moeglich_ein_token else 0)
-        obergrenze = len(tokens) - (
-            verbleibende_anker if wenn_moeglich_ein_token else 0
-        )
-        grenzen.append(
-            _textgrenze_waehlen(tokens, ideal, untergrenze, obergrenze)
-        )
-    grenzen.append(len(tokens))
-
-    segmente: list[dict[str, Any]] = []
-    for zeitanker, wort_start, wort_ende in zip(anker, grenzen, grenzen[1:]):
-        teiltext = " ".join(tokens[wort_start:wort_ende]).strip()
-        if teiltext:
-            segmente.append(
-                {
-                    "start": zeitanker.start,
-                    "end": zeitanker.ende,
-                    "speaker": block.speaker,
-                    "text": teiltext,
-                    "languages": sprachen,
-                }
-            )
-    return segmente
+    dauer = max(0.01, block.ende - block.start)
+    geschaetzte_zeiten = [
+        {
+            "start": index * dauer / len(tokens),
+            "end": (index + 1) * dauer / len(tokens),
+            "word": token,
+        }
+        for index, token in enumerate(tokens)
+    ]
+    return _guten_text_mit_wortzeiten_abgleichen(
+        block, text, sprachen, geschaetzte_zeiten
+    )
 
 
 def _sprachblock_transkribieren(
     client: OpenAI, dateipfad: Path
-) -> tuple[str, list[str], list[dict[str, Any]]]:
+) -> tuple[str, list[str]]:
     with dateipfad.open("rb") as audio_file:
         transcript = client.audio.transcriptions.create(
             model="gpt-transcribe",
             file=audio_file,
             prompt=MEHRSPRACHEN_PROMPT,
             languages=list(ERWARTETE_SPRACHEN),
-            response_format="verbose_json",
-            timestamp_granularities=["word"],
         )
 
     sprachen = []
@@ -611,11 +558,17 @@ def _sprachblock_transkribieren(
         code = str(_feld(sprache, "code", "")).strip()
         if code:
             sprachen.append(code)
-    if not sprachen:
-        sprache = str(_feld(transcript, "language", "")).strip()
-        if sprache:
-            sprachen.append(sprache)
+    return str(_feld(transcript, "text", "")).strip(), sprachen
 
+
+def _wortzeiten_erkennen(client: OpenAI, dateipfad: Path) -> list[dict[str, Any]]:
+    with dateipfad.open("rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="verbose_json",
+            timestamp_granularities=["word"],
+        )
     wortzeiten = []
     for wort in _feld(transcript, "words", []) or []:
         worttext = str(_feld(wort, "word", "")).strip()
@@ -623,10 +576,51 @@ def _sprachblock_transkribieren(
         ende = float(_feld(wort, "end", start))
         if worttext and ende >= start:
             wortzeiten.append({"start": start, "end": ende, "word": worttext})
-    return str(_feld(transcript, "text", "")).strip(), sprachen, wortzeiten
+    return wortzeiten
 
 
-def _text_mit_wortzeiten_auf_sekunden_verteilen(
+def _token_normalisieren(token: str) -> str:
+    token = token.casefold().replace("ي", "ی").replace("ك", "ک").replace("‌", "")
+    return "".join(zeichen for zeichen in token if zeichen.isalnum())
+
+
+def _zeitindizes_abgleichen(gute_tokens: list[str], zeit_tokens: list[str]) -> list[int]:
+    if not gute_tokens or not zeit_tokens:
+        return []
+    gute_normalisiert = [_token_normalisieren(token) for token in gute_tokens]
+    zeit_normalisiert = [_token_normalisieren(token) for token in zeit_tokens]
+    zuordnung: list[int | None] = [None] * len(gute_tokens)
+    for block in SequenceMatcher(
+        None, gute_normalisiert, zeit_normalisiert, autojunk=False
+    ).get_matching_blocks():
+        for versatz in range(block.size):
+            zuordnung[block.a + versatz] = block.b + versatz
+
+    bekannte = [(-1, -1)]
+    bekannte.extend(
+        (index, zeitindex)
+        for index, zeitindex in enumerate(zuordnung)
+        if zeitindex is not None
+    )
+    bekannte.append((len(gute_tokens), len(zeit_tokens)))
+    for (links_text, links_zeit), (rechts_text, rechts_zeit) in pairwise(bekannte):
+        textspanne = rechts_text - links_text
+        for index in range(links_text + 1, rechts_text):
+            anteil = (index - links_text) / textspanne
+            zeitindex = round(links_zeit + anteil * (rechts_zeit - links_zeit))
+            zuordnung[index] = min(len(zeit_tokens) - 1, max(0, zeitindex))
+    return [int(index) for index in zuordnung]
+
+
+def _schrift_von_token(token: str) -> str | None:
+    if re.search(r"[\u0600-\u06ff]", token):
+        return "fa"
+    if re.search(r"[A-Za-zÄÖÜäöüß]", token):
+        return "de"
+    return None
+
+
+def _guten_text_mit_wortzeiten_abgleichen(
     block: Sprachblock,
     text: str,
     sprachen: list[str],
@@ -634,34 +628,75 @@ def _text_mit_wortzeiten_auf_sekunden_verteilen(
 ) -> list[dict[str, Any]]:
     tokens = text.split()
     if not tokens or not wortzeiten:
-        return _text_auf_zeitanker_verteilen(block, text, sprachen)
+        return []
 
-    pro_sekunde: dict[int, list[str]] = {}
-    for index, token in enumerate(tokens):
-        zeitindex = min(
-            len(wortzeiten) - 1,
-            math.floor((index + 0.5) * len(wortzeiten) / len(tokens)),
-        )
+    zeit_tokens = [str(wortzeit["word"]) for wortzeit in wortzeiten]
+    zeitindizes = _zeitindizes_abgleichen(tokens, zeit_tokens)
+    getaktete_tokens: list[dict[str, Any]] = []
+    for token, zeitindex in zip(tokens, zeitindizes):
         wortzeit = wortzeiten[zeitindex]
-        wortmitte = (
-            float(wortzeit["start"]) + float(wortzeit["end"])
-        ) / 2
-        sekunde = max(
-            math.floor(block.start),
-            min(math.ceil(block.ende) - 1, math.floor(block.start + wortmitte)),
+        start = min(
+            block.ende,
+            max(block.start, block.start + float(wortzeit["start"])),
         )
-        pro_sekunde.setdefault(sekunde, []).append(token)
+        ende = min(
+            block.ende,
+            max(start, block.start + float(wortzeit["end"])),
+        )
+        getaktete_tokens.append({"text": token, "start": start, "end": ende})
 
-    return [
-        {
-            "start": float(sekunde),
-            "end": min(block.ende, float(sekunde + 1)),
-            "speaker": block.speaker,
-            "text": " ".join(tokens_in_sekunde),
-            "languages": sprachen,
-        }
-        for sekunde, tokens_in_sekunde in sorted(pro_sekunde.items())
-    ]
+    satzende = re.compile(r"[.!?؟]+[\"'»”)]*$")
+    segmente: list[dict[str, Any]] = []
+    gruppe: list[dict[str, Any]] = []
+    for index, token in enumerate(getaktete_tokens):
+        gruppe.append(token)
+        ist_letztes = index == len(getaktete_tokens) - 1
+        if ist_letztes:
+            abschliessen = True
+        else:
+            naechstes = getaktete_tokens[index + 1]
+            dauer = float(token["end"]) - float(gruppe[0]["start"])
+            pause = float(naechstes["start"]) - float(token["end"])
+            zeichen = sum(len(str(eintrag["text"])) for eintrag in gruppe)
+            aktuelle_schrift = _schrift_von_token(str(token["text"]))
+            naechste_schrift = _schrift_von_token(str(naechstes["text"]))
+            sprachwechsel = (
+                aktuelle_schrift is not None
+                and naechste_schrift is not None
+                and aktuelle_schrift != naechste_schrift
+            )
+            abschliessen = (
+                (bool(satzende.search(str(token["text"]))) and len(gruppe) >= 2)
+                or (pause >= UNTERTITEL_PAUSE_SEKUNDEN and len(gruppe) >= 2)
+                or dauer >= UNTERTITEL_MAX_SEKUNDEN
+                or zeichen >= UNTERTITEL_MAX_ZEICHEN
+                or len(gruppe) >= UNTERTITEL_MAX_WOERTER
+                or (sprachwechsel and dauer >= 1.5 and len(gruppe) >= 4)
+            )
+        if abschliessen:
+            segmente.append(
+                {
+                    "start": float(gruppe[0]["start"]),
+                    "end": float(gruppe[-1]["end"]),
+                    "speaker": block.speaker,
+                    "text": " ".join(str(eintrag["text"]) for eintrag in gruppe),
+                    "languages": sprachen,
+                }
+            )
+            gruppe = []
+
+    if len(segmente) >= 2:
+        letzter = segmente[-1]
+        if (
+            len(letzter["text"].split()) <= 2
+            and letzter["end"] - letzter["start"] < 1
+            and not satzende.search(letzter["text"])
+        ):
+            vorheriger = segmente[-2]
+            vorheriger["text"] = f"{vorheriger['text']} {letzter['text']}"
+            vorheriger["end"] = letzter["end"]
+            segmente.pop()
+    return segmente
 
 
 def _sprachbloecke_transkribieren(
@@ -679,9 +714,12 @@ def _sprachbloecke_transkribieren(
             raise RuntimeError(f"Sprachblock {index} überschreitet das Uploadlimit.")
         dateien.append(blockpfad)
 
-    ergebnisse: list[
-        tuple[str, list[str], list[dict[str, Any]]] | Exception | None
-    ] = [None] * len(bloecke)
+    text_ergebnisse: list[tuple[str, list[str]] | Exception | None] = [None] * len(
+        bloecke
+    )
+    zeit_ergebnisse: list[list[dict[str, Any]] | Exception | None] = [None] * len(
+        bloecke
+    )
     worker = min(MAX_PARALLELE_SPRACHREQUESTS, max(1, len(bloecke)))
     with ThreadPoolExecutor(max_workers=worker) as executor:
         aufgaben = {
@@ -691,31 +729,54 @@ def _sprachbloecke_transkribieren(
         for erledigt, aufgabe in enumerate(as_completed(aufgaben), start=1):
             index = aufgaben[aufgabe]
             try:
-                ergebnisse[index] = aufgabe.result()
+                text_ergebnisse[index] = aufgabe.result()
             except Exception as fehler:  # noqa: BLE001 - Fallback soll jeden Requestfehler abfangen.
-                ergebnisse[index] = fehler
+                text_ergebnisse[index] = fehler
             _fortschritt_melden(
                 fortschritt,
-                f"Deutsch/Persisch verfeinern: {erledigt} von {len(bloecke)} …",
+                f"Pipeline 1/3 – Deutsch/Persisch: {erledigt} von {len(bloecke)} …",
+            )
+
+    with ThreadPoolExecutor(max_workers=worker) as executor:
+        aufgaben = {
+            executor.submit(_wortzeiten_erkennen, client, datei): index
+            for index, datei in enumerate(dateien)
+        }
+        for erledigt, aufgabe in enumerate(as_completed(aufgaben), start=1):
+            index = aufgaben[aufgabe]
+            try:
+                zeit_ergebnisse[index] = aufgabe.result()
+            except Exception as fehler:  # noqa: BLE001 - lokaler Timing-Fallback.
+                zeit_ergebnisse[index] = fehler
+            _fortschritt_melden(
+                fortschritt,
+                f"Pipeline 2/3 – Wortzeiten: {erledigt} von {len(bloecke)} …",
             )
 
     segmente: list[dict[str, Any]] = []
     hinweise: list[str] = []
-    for index, (block, ergebnis) in enumerate(zip(bloecke, ergebnisse), start=1):
-        if isinstance(ergebnis, Exception) or ergebnis is None:
+    _fortschritt_melden(fortschritt, "Pipeline 3/3 – Text und Wortzeiten abgleichen …")
+    for index, (block, text_ergebnis, zeit_ergebnis) in enumerate(
+        zip(bloecke, text_ergebnisse, zeit_ergebnisse), start=1
+    ):
+        if isinstance(text_ergebnis, Exception) or text_ergebnis is None:
             text = block.fallback_text
-            details = str(ergebnis) if ergebnis else "unbekannter Fehler"
+            details = str(text_ergebnis) if text_ergebnis else "unbekannter Fehler"
             hinweise.append(f"Sprachblock {index} wurde nicht verfeinert: {details}")
             sprachen: list[str] = []
-            wortzeiten: list[dict[str, Any]] = []
         else:
-            text, sprachen, wortzeiten = ergebnis
+            text, sprachen = text_ergebnis
             text = text or block.fallback_text
-        segmente.extend(
-            _text_mit_wortzeiten_auf_sekunden_verteilen(
-                block, text, sprachen, wortzeiten
+        if isinstance(zeit_ergebnis, Exception) or not zeit_ergebnis:
+            segmente.extend(_text_auf_zeitanker_verteilen(block, text, sprachen))
+            details = str(zeit_ergebnis) if zeit_ergebnis else "keine Wortzeiten"
+            hinweise.append(f"Sprachblock {index} nutzt geschätzte Zeiten: {details}")
+        else:
+            segmente.extend(
+                _guten_text_mit_wortzeiten_abgleichen(
+                    block, text, sprachen, zeit_ergebnis
+                )
             )
-        )
     return segmente, hinweise
 
 
@@ -743,38 +804,19 @@ def _transkript_formatieren(
         "Sprachen: Deutsch und Persisch",
     ]
     if hinweise:
-        zeilen.extend(
-            ["", f"Hinweis: {len(hinweise)} Abschnitt(e) nur mit Basistranskription."]
-        )
+        zeilen.extend(["", f"Hinweis: {len(hinweise)} Verarbeitungshinweis(e)."])
     zeilen.append("")
 
-    pro_sekunde: dict[int, list[tuple[str, str]]] = {}
-    for segment in segmente:
+    for segment in sorted(segmente, key=lambda eintrag: (eintrag["start"], eintrag["end"])):
         text = segment["text"].strip()
         if not text:
             continue
-        sekunde = max(0, math.floor(float(segment["start"])))
+        start_sekunde = max(0, math.floor(float(segment["start"])))
+        ende_sekunde = max(start_sekunde + 1, math.ceil(float(segment["end"])))
+        start = _zeit_formatieren(start_sekunde)
+        ende = _zeit_formatieren(ende_sekunde)
         sprecher = _sprecher_anzeigen(segment["speaker"])
-        pro_sekunde.setdefault(sekunde, []).append((sprecher, text))
-
-    for sekunde in range(max(1, math.ceil(dauer))):
-        zeit = _zeit_formatieren(sekunde)
-        eintraege = pro_sekunde.get(sekunde, [])
-        if not eintraege:
-            zeilen.append(f"[{zeit}] —")
-            continue
-
-        texte_nach_sprecher: list[tuple[str, list[str]]] = []
-        for sprecher, text in eintraege:
-            if texte_nach_sprecher and texte_nach_sprecher[-1][0] == sprecher:
-                texte_nach_sprecher[-1][1].append(text)
-            else:
-                texte_nach_sprecher.append((sprecher, [text]))
-        inhalt = " | ".join(
-            f"Sprecher {sprecher}: {' '.join(texte)}"
-            for sprecher, texte in texte_nach_sprecher
-        )
-        zeilen.append(f"[{zeit}] {inhalt}")
+        zeilen.append(f"[{start} – {ende}] Sprecher {sprecher}: {text}")
 
     return "\n".join(zeilen).strip()
 

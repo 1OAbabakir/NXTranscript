@@ -78,12 +78,13 @@ Jede Datei wird lokal mit FFmpeg in ein berechenbares Mono-MP3 mit 16 kHz und 48
 
 ## Deutsch und Persisch
 
-Die Verarbeitung besteht aus zwei Stufen:
+Die Verarbeitung besteht aus drei Stufen:
 
 1. `gpt-4o-transcribe-diarize` ermittelt Sprecherwechsel und Zeitstempel, ohne eine einzelne Eingabesprache zu erzwingen.
-2. Direkt benachbarte Abschnitte desselben Sprechers werden gebündelt und mit `gpt-transcribe` sowie den Sprachhinweisen `de` und `fa` erneut transkribiert.
+2. Direkt benachbarte Abschnitte desselben Sprechers werden gebündelt und mit `gpt-transcribe` sowie den Sprachhinweisen `de` und `fa` erneut transkribiert. Dieser Text ist das qualitative Endergebnis.
+3. `whisper-1` ermittelt separat Wort-Zeitstempel. Sein Text wird nicht ausgegeben; ein lokaler Sequenzabgleich überträgt ausschließlich seine Zeiten auf den hochwertigen Text aus Stufe 2.
 
-Der zweite Durchlauf fordert zusätzlich Wort-Zeitstempel an. Für die Ausgabe wird der hochwertige zweisprachige Text anhand dieser OpenAI-Zeitwerte wortweise auf einzelne Sekunden zurückverteilt. Jede Sekunde der Audiodatei erhält genau eine Ausgabezeile; Sekunden ohne erkannte Sprache werden mit `—` markiert. Falls die API ausnahmsweise keine Wortzeiten liefert, dienen die Zeitsegmente der Sprechererkennung als lokaler Fallback. Dadurch bleibt die Qualität des zweiten Durchlaufs erhalten, ohne dass ein langes Gespräch als eine einzige Zeitzeile erscheint oder ein zusätzlicher API-Request nötig wird.
+Aus dem abgeglichenen Ergebnis bildet die Anwendung lesbare Untertitelabschnitte mit sekundengenauen Start- und Endzeiten. Bevorzugte Grenzen sind Satzenden, Sprechpausen und Sprachwechsel; lange Passagen werden spätestens nach acht Sekunden beziehungsweise einer gut lesbaren Textlänge getrennt. Falls Whisper keine Wortzeiten liefert, wird das Timing lokal geschätzt. So entstehen weder ein einziger riesiger Zeitblock noch unlesbare Einzelwortzeilen.
 
 Der zweisprachige Pass bewahrt Deutsch in lateinischer und Persisch in persischer Schrift. Er übersetzt die Inhalte nicht. Falls ein einzelner Verfeinerungsrequest fehlschlägt, bleibt für diesen Abschnitt die Basistranskription erhalten und das Ergebnis enthält einen Hinweis.
 
